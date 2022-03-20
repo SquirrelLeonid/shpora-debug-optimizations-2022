@@ -3,6 +3,8 @@
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFrameworks>net48;net5.0</TargetFrameworks>
+	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <LangVersion>9.0</LangVersion>
     </PropertyGroup>
 
     <ItemGroup>
@@ -10,6 +12,9 @@
     </ItemGroup>
 
     <ItemGroup>
+      <None Update="MARBLES.BMP">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
       <None Update="sample.bmp">
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>

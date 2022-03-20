@@ -359,3 +359,5 @@ MigrationBackup/
 !./debug/
 
 .idea
+/optimizations/JPEG/earth.bmp
+/optimizations/JPEG/MARBLES.BMP
