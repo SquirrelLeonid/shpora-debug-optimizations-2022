@@ -5,6 +5,8 @@
         <TargetFrameworks>net48;net5.0</TargetFrameworks>
 	<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>9.0</LangVersion>
+        <StartupObject>JPEG.Program</StartupObject>
+        <PlatformTarget>x64</PlatformTarget>
     </PropertyGroup>
 
     <ItemGroup>
@@ -12,6 +14,9 @@
     </ItemGroup>
 
     <ItemGroup>
+      <None Update="earth.bmp">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
       <None Update="MARBLES.BMP">
         <CopyToOutputDirectory>Always</CopyToOutputDirectory>
       </None>

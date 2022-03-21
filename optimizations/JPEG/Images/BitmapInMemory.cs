@@ -31,8 +31,8 @@ namespace JPEG.Images
         {
             get
             {
-                if (y < 0 || y > Height ||
-                    x < 0 || x > Stride)
+                if (y < 0 || y >= Height ||
+                    x < 0 || x >= Stride)
                     throw new IndexOutOfRangeException("index(es) beyond of bitmap area");
 
                 return FirstPixelPointer + Stride * y + x * 3;
@@ -45,6 +45,7 @@ namespace JPEG.Images
             {
                 if (pixelNumber < 0 || pixelNumber > Stride * Height)
                     throw new IndexOutOfRangeException("index beyond of bitmap area");
+
                 var rowToSkip = pixelNumber / Width;
                 var pixelToSkip = pixelNumber % Width - 1;
                 return FirstPixelPointer + rowToSkip * Stride + pixelToSkip * 3;
@@ -56,10 +57,6 @@ namespace JPEG.Images
             bitmap.UnlockBits(data);
         }
 
-        //public static unsafe Bitmap RestoreFromCompressed(,int width, int height)
-        //{
-        //    var bmp = new Bitmap(width, height);
-        //}
         public void Save(string name, ImageFormat format)
         {
             bitmap.Save(name, format);
@@ -67,6 +64,10 @@ namespace JPEG.Images
 
         public unsafe double GetYCbCrPixelComponents(int y, int x, int shift)
         {
+            if (y < 0 || y >= Height ||
+                x < 0 || x >= Stride)
+                return 0;
+
             var ptrToPixelComponent = this[y, x];
 
             var b = *ptrToPixelComponent;
@@ -86,6 +87,10 @@ namespace JPEG.Images
             int y, int x,
             double _y, double cb, double cr)
         {
+            if (y < 0 || y >= Height ||
+                x < 0 || x >= Stride)
+                return;
+
             var ptrToPixelComponent = this[y, x];
 
             *ptrToPixelComponent = ToByte((298.082 * _y + 516.412 * cb) / 256.0 - 276.836);

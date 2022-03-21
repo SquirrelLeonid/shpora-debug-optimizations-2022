@@ -5,7 +5,6 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using JPEG.Images;
-using PixelFormat = JPEG.Images.PixelFormat;
 
 namespace JPEG
 {
@@ -21,8 +20,7 @@ namespace JPEG
             {
                 Console.WriteLine(IntPtr.Size == 8 ? "64-bit version" : "32-bit version");
                 var sw = Stopwatch.StartNew();
-                var fileName = @"sample.bmp";
-                //				var fileName = "Big_Black_River_Railroad_Bridge.bmp";
+                var fileName = @"earth.bmp";
                 var compressedFileName = fileName + ".compressed." + CompressionQuality;
                 var uncompressedFileName = fileName + ".uncompressed." + CompressionQuality + ".bmp";
 
@@ -82,38 +80,41 @@ namespace JPEG
 
             return new CompressedImage
             {
-                Quality = quality, CompressedBytes = compressedBytes, BitsCount = bitsCount, DecodeTable = decodeTable,
-                Height = bitmapInMemory.Height, Width = bitmapInMemory.Width
+                Quality = quality,
+                CompressedBytes = compressedBytes,
+                BitsCount = bitsCount,
+                DecodeTable = decodeTable,
+                Height = bitmapInMemory.Height,
+                Width = bitmapInMemory.Width
             };
         }
 
         private static BitmapInMemory Uncompress(CompressedImage image)
         {
             var result = new BitmapInMemory(new Bitmap(image.Width, image.Height,
-                System.Drawing.Imaging.PixelFormat.Format24bppRgb));
-            using (var allQuantizedBytes = new MemoryStream(HuffmanCodec.Decode(
-                       image.CompressedBytes,
-                       image.DecodeTable,
-                       image.BitsCount)))
-            {
-                for (var y = 0; y < image.Height; y += DCTSize)
-                for (var x = 0; x < image.Width; x += DCTSize)
-                {
-                    var _y = new double[DCTSize, DCTSize];
-                    var cb = new double[DCTSize, DCTSize];
-                    var cr = new double[DCTSize, DCTSize];
-                    foreach (var channel in new[] { _y, cb, cr })
-                    {
-                        var quantizedBytes = new byte[DCTSize * DCTSize];
-                        allQuantizedBytes.ReadAsync(quantizedBytes, 0, quantizedBytes.Length).Wait();
-                        var quantizedFreqs = ZigZagUnScan(quantizedBytes);
-                        var channelFreqs = DeQuantize(quantizedFreqs, image.Quality);
-                        DCT.IDCT2D(channelFreqs, channel);
-                        ShiftMatrixValues(channel, 128);
-                    }
+                PixelFormat.Format24bppRgb));
+            using var allQuantizedBytes = new MemoryStream(HuffmanCodec.Decode(
+                image.CompressedBytes,
+                image.DecodeTable,
+                image.BitsCount));
 
-                    SetPixels(result, _y, cb, cr, PixelFormat.YCbCr, y, x);
+            for (var y = 0; y < image.Height; y += DCTSize)
+            for (var x = 0; x < image.Width; x += DCTSize)
+            {
+                var yChannel = new double[DCTSize, DCTSize];
+                var cbChannel = new double[DCTSize, DCTSize];
+                var crChannel = new double[DCTSize, DCTSize];
+                foreach (var channel in new[] { yChannel, cbChannel, crChannel })
+                {
+                    var quantizedBytes = new byte[DCTSize * DCTSize];
+                    allQuantizedBytes.ReadAsync(quantizedBytes, 0, quantizedBytes.Length).Wait();
+                    var quantizedFreqs = ZigZagUnScan(quantizedBytes);
+                    var channelFreqs = DeQuantize(quantizedFreqs, image.Quality);
+                    DCT.IDCT2D(channelFreqs, channel);
+                    ShiftMatrixValues(channel, 128);
                 }
+
+                SetPixels(result, yChannel, cbChannel, crChannel, y, x);
             }
 
             return result;
@@ -124,23 +125,29 @@ namespace JPEG
             var height = subMatrix.GetLength(0);
             var width = subMatrix.GetLength(1);
 
+
             for (var y = 0; y < height; y++)
             for (var x = 0; x < width; x++)
-                subMatrix[y, x] = subMatrix[y, x] + shiftValue;
+                subMatrix[y, x] += shiftValue;
         }
 
-        private static void SetPixels(BitmapInMemory bitmapInMemory,
-            double[,] a, double[,] b, double[,] c,
-            PixelFormat format,
+        private static void SetPixels(
+            BitmapInMemory bitmapInMemory,
+            double[,] yChannel, double[,] cbChannel, double[,] crChannel,
             int yOffset,
             int xOffset)
         {
-            var height = a.GetLength(0);
-            var width = a.GetLength(1);
+            var height = yChannel.GetLength(0);
+            var width = yChannel.GetLength(1);
 
             for (var y = 0; y < height; y++)
             for (var x = 0; x < width; x++)
-                bitmapInMemory.SetYCbCrComponents(yOffset + y, xOffset + x, a[y, x], b[y, x], c[y, x]);
+                bitmapInMemory.SetYCbCrComponents(
+                    yOffset + y,
+                    xOffset + x,
+                    yChannel[y, x],
+                    cbChannel[y, x],
+                    crChannel[y, x]);
         }
 
         private static double[,] GetSubMatrix(
@@ -150,16 +157,18 @@ namespace JPEG
             int shift)
         {
             var result = new double[yLength, xLength];
-            for (var j = 0; j < yLength; j++)
-            for (var i = 0; i < xLength; i++)
-                result[j, i] = bitmapInMemory.GetYCbCrPixelComponents(
-                    yOffset + j,
-                    xOffset + i,
+
+            for (var y = 0; y < yLength; y++)
+            for (var x = 0; x < xLength; x++)
+                result[y, x] = bitmapInMemory.GetYCbCrPixelComponents(
+                    yOffset + y,
+                    xOffset + x,
                     shift);
+
             return result;
         }
 
-        private static IEnumerable<byte> ZigZagScan(byte[,] channelFreqs)
+        private static byte[] ZigZagScan(byte[,] channelFreqs)
         {
             return new[]
             {
@@ -223,11 +232,15 @@ namespace JPEG
 
         private static byte[,] Quantize(double[,] channelFreqs, int quality)
         {
-            var result = new byte[channelFreqs.GetLength(0), channelFreqs.GetLength(1)];
+            var height = channelFreqs.GetLength(0);
+            var width = channelFreqs.GetLength(1);
+
+            var result = new byte[height, width];
 
             var quantizationMatrix = GetQuantizationMatrix(quality);
-            for (var y = 0; y < channelFreqs.GetLength(0); y++)
-            for (var x = 0; x < channelFreqs.GetLength(1); x++)
+
+            for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
                 result[y, x] = (byte)(channelFreqs[y, x] / quantizationMatrix[y, x]);
 
             return result;
@@ -235,14 +248,17 @@ namespace JPEG
 
         private static double[,] DeQuantize(byte[,] quantizedBytes, int quality)
         {
-            var result = new double[quantizedBytes.GetLength(0), quantizedBytes.GetLength(1)];
+            var height = quantizedBytes.GetLength(0);
+            var width = quantizedBytes.GetLength(1);
+
+            var result = new double[height, width];
+
             var quantizationMatrix = GetQuantizationMatrix(quality);
 
-            for (var y = 0; y < quantizedBytes.GetLength(0); y++)
-            for (var x = 0; x < quantizedBytes.GetLength(1); x++)
-                result[y, x] =
-                    (sbyte)quantizedBytes[y, x] *
-                    quantizationMatrix[y, x]; //NOTE cast to sbyte not to loose negative numbers
+            for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+                //NOTE cast to sbyte not to loose negative numbers
+                result[y, x] = (sbyte)quantizedBytes[y, x] * quantizationMatrix[y, x];
 
             return result;
         }
@@ -266,9 +282,13 @@ namespace JPEG
                 { 72, 92, 95, 98, 112, 100, 103, 99 }
             };
 
-            for (var y = 0; y < result.GetLength(0); y++)
-            for (var x = 0; x < result.GetLength(1); x++)
+            var height = result.GetLength(0);
+            var width = result.GetLength(1);
+
+            for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
                 result[y, x] = (multiplier * result[y, x] + 50) / 100;
+
             return result;
         }
     }
