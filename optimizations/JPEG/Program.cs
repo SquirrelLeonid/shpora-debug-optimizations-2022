@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using JPEG.Images;
@@ -23,6 +22,7 @@ namespace JPEG
                 Console.WriteLine(IntPtr.Size == 8 ? "64-bit version" : "32-bit version");
                 var sw = Stopwatch.StartNew();
                 var fileName = @"sample.bmp";
+                //				var fileName = "Big_Black_River_Railroad_Bridge.bmp";
                 var compressedFileName = fileName + ".compressed." + CompressionQuality;
                 var uncompressedFileName = fileName + ".uncompressed." + CompressionQuality + ".bmp";
 
@@ -30,6 +30,7 @@ namespace JPEG
                 using (var bmp = (Bitmap)Image.FromStream(fileStream, false, false))
                 {
                     var bitmapInMemory = new BitmapInMemory(bmp);
+
                     sw.Stop();
                     Console.WriteLine($"{bmp.Width}x{bmp.Height} - {fileStream.Length / (1024.0 * 1024):F2} MB");
                     sw.Start();
@@ -40,19 +41,10 @@ namespace JPEG
 
                 sw.Stop();
                 Console.WriteLine("Compression: " + sw.Elapsed);
-
                 sw.Restart();
                 var compressedImage = CompressedImage.Load(compressedFileName);
                 var uncompressedImage = Uncompress(compressedImage);
-
-                var restoredBitmap = BitmapInMemory.RestoreFromCompressed(
-                    uncompressedImage,
-                    compressedImage.Width,
-                    compressedImage.Height);
-
-                //Здесь CbCr пересчитывался в RGB
-                var resultBmp = (Bitmap)uncompressedImage;
-                resultBmp.Save(restoredBitmap, ImageFormat.Bmp);
+                uncompressedImage.Save(uncompressedFileName, ImageFormat.Bmp);
                 Console.WriteLine("Decompression: " + sw.Elapsed);
                 Console.WriteLine($"Peak commit size: {MemoryMeter.PeakPrivateBytes() / (1024.0 * 1024):F2} MB");
                 Console.WriteLine($"Peak working set: {MemoryMeter.PeakWorkingSet() / (1024.0 * 1024):F2} MB");
@@ -63,43 +55,26 @@ namespace JPEG
             }
         }
 
-        /// <summary>
-        ///     Сжимает изображение
-        /// </summary>
-        /// <param name="bmpInMemory"></param>
-        /// <param name="quality"></param>
-        /// <returns></returns>
-        private static CompressedImage Compress(BitmapInMemory bmpInMemory, int quality = 50)
+        private static CompressedImage Compress(BitmapInMemory bitmapInMemory, int quality = 50)
         {
-            //Раньше заместо BitmapInMemory сюда приходил matrix, содержащий Pixel[,]
             var allQuantizedBytes = new List<byte>();
 
-            //*Можно переписать так, чтобы обрабатывались сразу три компоненты
-            unsafe
+            for (var y = 0; y < bitmapInMemory.Height; y += DCTSize)
+            for (var x = 0; x < bitmapInMemory.Width; x += DCTSize)
+            for (var shift = 0; shift < 3; shift++)
             {
-                var ptrToRow = bmpInMemory.FirstPixelPointer;
+                var subMatrix = GetSubMatrix(
+                    bitmapInMemory,
+                    y, DCTSize,
+                    x, DCTSize,
+                    shift);
 
-                for (var y = 0; y < bmpInMemory.Height; ptrToRow += bmpInMemory.Stride)
-                {
-                    var ptrToPixelComponent = ptrToRow;
-                    for (var x = 0; x < bmpInMemory.Width; ptrToPixelComponent += 3)
-                    {
-                        //Возможно стоит создавать небольшие матрицы
-                    }
-                }
+                ShiftMatrixValues(subMatrix, -128);
+                var channelFreqs = DCT.DCT2D(subMatrix);
+                var quantizedFreqs = Quantize(channelFreqs, quality);
+                var quantizedBytes = ZigZagScan(quantizedFreqs);
+                allQuantizedBytes.AddRange(quantizedBytes);
             }
-
-            for (var y = 0; y < bmpInMemory.Height; y += DCTSize)
-            for (var x = 0; x < bmpInMemory.Width; x += DCTSize)
-                foreach (var selector in new Func<Pixel, double>[] { p => p.Y, p => p.Cb, p => p.Cr })
-                {
-                    var subMatrix = GetSubMatrix(bmpInMemory, y, DCTSize, x, DCTSize, selector);
-                    ShiftMatrixValues(subMatrix, -128);
-                    var channelFreqs = DCT.DCT2D(subMatrix);
-                    var quantizedFreqs = Quantize(channelFreqs, quality);
-                    var quantizedBytes = ZigZagScan(quantizedFreqs);
-                    allQuantizedBytes.AddRange(quantizedBytes);
-                }
 
             long bitsCount;
             Dictionary<BitsWithLength, byte> decodeTable;
@@ -107,24 +82,19 @@ namespace JPEG
 
             return new CompressedImage
             {
-                Quality = quality,
-                CompressedBytes = compressedBytes,
-                BitsCount = bitsCount,
-                DecodeTable = decodeTable,
-                Height = bmpInMemory.Height,
-                Width = bmpInMemory.Width
+                Quality = quality, CompressedBytes = compressedBytes, BitsCount = bitsCount, DecodeTable = decodeTable,
+                Height = bitmapInMemory.Height, Width = bitmapInMemory.Width
             };
         }
 
-        private static Matrix Uncompress(CompressedImage image)
+        private static BitmapInMemory Uncompress(CompressedImage image)
         {
-            //Matrix - это бывший самописный класс, не из System.
-            var result = new Matrix(image.Height, image.Width);
-            using (var allQuantizedBytes = new MemoryStream(
-                       HuffmanCodec.Decode(
-                           image.CompressedBytes,
-                           image.DecodeTable,
-                           image.BitsCount)))
+            var result = new BitmapInMemory(new Bitmap(image.Width, image.Height,
+                System.Drawing.Imaging.PixelFormat.Format24bppRgb));
+            using (var allQuantizedBytes = new MemoryStream(HuffmanCodec.Decode(
+                       image.CompressedBytes,
+                       image.DecodeTable,
+                       image.BitsCount)))
             {
                 for (var y = 0; y < image.Height; y += DCTSize)
                 for (var x = 0; x < image.Width; x += DCTSize)
@@ -134,12 +104,9 @@ namespace JPEG
                     var cr = new double[DCTSize, DCTSize];
                     foreach (var channel in new[] { _y, cb, cr })
                     {
-                        //3 * DCTSize * DCTSize ?
                         var quantizedBytes = new byte[DCTSize * DCTSize];
-                        //?
                         allQuantizedBytes.ReadAsync(quantizedBytes, 0, quantizedBytes.Length).Wait();
                         var quantizedFreqs = ZigZagUnScan(quantizedBytes);
-                        //До этого момента все сходится
                         var channelFreqs = DeQuantize(quantizedFreqs, image.Quality);
                         DCT.IDCT2D(channelFreqs, channel);
                         ShiftMatrixValues(channel, 128);
@@ -152,11 +119,6 @@ namespace JPEG
             return result;
         }
 
-        /// <summary>
-        ///     Смещаем значения каждого цвета на shiftValue
-        /// </summary>
-        /// <param name="subMatrix"></param>
-        /// <param name="shiftValue"></param>
         private static void ShiftMatrixValues(double[,] subMatrix, int shiftValue)
         {
             var height = subMatrix.GetLength(0);
@@ -164,47 +126,41 @@ namespace JPEG
 
             for (var y = 0; y < height; y++)
             for (var x = 0; x < width; x++)
-                subMatrix[y, x] += shiftValue;
+                subMatrix[y, x] = subMatrix[y, x] + shiftValue;
         }
 
-        private static void SetPixels(BitmapInMemory bitmapInMemory, double[,] a, double[,] b, double[,] c,
+        private static void SetPixels(BitmapInMemory bitmapInMemory,
+            double[,] a, double[,] b, double[,] c,
             PixelFormat format,
-            int yOffset, int xOffset)
+            int yOffset,
+            int xOffset)
         {
             var height = a.GetLength(0);
             var width = a.GetLength(1);
 
             for (var y = 0; y < height; y++)
             for (var x = 0; x < width; x++)
-                bitmapInMemory[yOffset + y, xOffset + x] = new Pixel(a[y, x], b[y, x], c[y, x], format);
+                bitmapInMemory.SetYCbCrComponents(yOffset + y, xOffset + x, a[y, x], b[y, x], c[y, x]);
         }
 
-        /// <summary>
-        ///     Получение подматрицы на каждый отдельный цветовой канал
-        /// </summary>
-        /// <param name="bitmapInMemory"></param>
-        /// <param name="yOffset">смещение по Y от начала</param>
-        /// <param name="yLength">длина матрицы (задается параметром DCTSize)</param>
-        /// <param name="xOffset">смещение по X от начала</param>
-        /// <param name="xLength">длина матрицы (задается параметром DCTSize)</param>
-        /// <param name="componentSelector"></param>
-        /// <returns></returns>
         private static double[,] GetSubMatrix(
             BitmapInMemory bitmapInMemory,
             int yOffset, int yLength,
             int xOffset, int xLength,
-            Func<Pixel, double> componentSelector)
+            int shift)
         {
             var result = new double[yLength, xLength];
             for (var j = 0; j < yLength; j++)
             for (var i = 0; i < xLength; i++)
-                result[j, i] = componentSelector(bitmapInMemory.Pixels[yOffset + j, xOffset + i]);
+                result[j, i] = bitmapInMemory.GetYCbCrPixelComponents(
+                    yOffset + j,
+                    xOffset + i,
+                    shift);
             return result;
         }
 
         private static IEnumerable<byte> ZigZagScan(byte[,] channelFreqs)
         {
-            //Здесь тоже завязано на размер DCT
             return new[]
             {
                 channelFreqs[0, 0], channelFreqs[0, 1], channelFreqs[1, 0], channelFreqs[2, 0], channelFreqs[1, 1],
