@@ -65,7 +65,7 @@ namespace JPEG.Images
         public unsafe double GetYCbCrPixelComponents(int y, int x, int shift)
         {
             if (y < 0 || y >= Height ||
-                x < 0 || x >= Stride)
+                x < 0 || x >= Width)
                 return 0;
 
             var ptrToPixelComponent = this[y, x];
@@ -88,7 +88,7 @@ namespace JPEG.Images
             double _y, double cb, double cr)
         {
             if (y < 0 || y >= Height ||
-                x < 0 || x >= Stride)
+                x < 0 || x >= Width)
                 return;
 
             var ptrToPixelComponent = this[y, x];
