@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using JPEG.Images;
+using JPEG.Utilities;
 
 namespace JPEG
 {
@@ -13,6 +14,7 @@ namespace JPEG
         private const int CompressionQuality = 70;
 
         private const int DCTSize = 8;
+        private const int DoubledDCTSize = DCTSize * 2;
 
         private static void Main(string[] args)
         {
@@ -57,48 +59,24 @@ namespace JPEG
         {
             var allQuantizedBytes = new List<byte>();
 
-            for (var y = 0; y < bitmapInMemory.Height; y += 2 * DCTSize)
-            for (var x = 0; x < bitmapInMemory.Width; x += 2 * DCTSize)
+            for (var y = 0; y < bitmapInMemory.Height; y += DoubledDCTSize)
+            for (var x = 0; x < bitmapInMemory.Width; x += DoubledDCTSize)
             {
-                var yChannel1 = GetSubMatrix(
+                var yChannel = GetEnlargeYChannel(bitmapInMemory, y, x);
+                var cbChannel = GetSubMatrix(
                     bitmapInMemory,
-                    y, DCTSize,
-                    x, DCTSize,
-                    0);
+                    y, DoubledDCTSize,
+                    x, DoubledDCTSize,
+                    1).ApplySubsampling();
 
-                var yChannel2 = GetSubMatrix(
+                var crChannel = GetSubMatrix(
                     bitmapInMemory,
-                    y, DCTSize,
-                    x + DCTSize, DCTSize,
-                    0);
+                    y, DoubledDCTSize,
+                    x, DoubledDCTSize,
+                    2).ApplySubsampling();
 
-                var yChannel3 = GetSubMatrix(
-                    bitmapInMemory,
-                    y + DCTSize, DCTSize,
-                    x, DCTSize,
-                    0);
-
-                var yChannel4 = GetSubMatrix(
-                    bitmapInMemory,
-                    y + DCTSize, DCTSize,
-                    x + DCTSize, DCTSize,
-                    0);
-
-                var cbChannel = DoSubsampling(
-                    GetSubMatrix(
-                        bitmapInMemory,
-                        y, 2 * DCTSize,
-                        x, 2 * DCTSize,
-                        1));
-
-                var crChannel = DoSubsampling(
-                    GetSubMatrix(
-                        bitmapInMemory,
-                        y, 2 * DCTSize,
-                        x, 2 * DCTSize,
-                        2));
-
-                foreach (var channel in new[] { yChannel1, yChannel2, yChannel3, yChannel4, cbChannel, crChannel })
+                foreach (var channel in new[]
+                             { yChannel[0], yChannel[1], yChannel[2], yChannel[3], cbChannel, crChannel })
                 {
                     ShiftMatrixValues(channel, -128);
                     var channelFreqs = DCT.DCT2D(channel);
@@ -123,39 +101,53 @@ namespace JPEG
             };
         }
 
-        private static double[,] DoSubsampling(double[,] channel)
+        private static double[][,] GetEnlargeYChannel(
+            BitmapInMemory bmp,
+            int yOffset,
+            int xOffset)
         {
-            var height = channel.GetLength(0);
-            var width = channel.GetLength(1);
-            var result = new double[height / 2, width / 2];
-
-            for (var y = 0; y < height; y += 2)
-            for (var x = 0; x < width; x += 2)
-                result[y / 2, x / 2] = channel[y, x];
+            var result = new[]
+            {
+                GetSubMatrix(bmp, yOffset, DCTSize, xOffset, DCTSize, 0),
+                GetSubMatrix(bmp, yOffset, DCTSize, xOffset + DCTSize, DCTSize, 0),
+                GetSubMatrix(bmp, yOffset + DCTSize, DCTSize, xOffset, DCTSize, 0),
+                GetSubMatrix(bmp, yOffset + DCTSize, DCTSize, xOffset + DCTSize, DCTSize, 0)
+            };
 
             return result;
         }
 
         private static BitmapInMemory Uncompress(CompressedImage image)
         {
-            var result = new BitmapInMemory(new Bitmap(image.Width, image.Height,
-                PixelFormat.Format24bppRgb));
-            using var allQuantizedBytes = new MemoryStream(HuffmanCodec.Decode(
-                image.CompressedBytes,
-                image.DecodeTable,
-                image.BitsCount));
+            var result = new BitmapInMemory(
+                new Bitmap(
+                    image.Width,
+                    image.Height,
+                    PixelFormat.Format24bppRgb));
+
+            var YXoffsets = GetMatrixOffsets(DCTSize);
+
+            using var allQuantizedBytes = new MemoryStream(
+                HuffmanCodec.Decode(
+                    image.CompressedBytes,
+                    image.DecodeTable,
+                    image.BitsCount));
 
             for (var y = 0; y < image.Height; y += DCTSize * 2)
             for (var x = 0; x < image.Width; x += DCTSize * 2)
             {
-                var yChannel1 = new double[DCTSize, DCTSize];
-                var yChannel2 = new double[DCTSize, DCTSize];
-                var yChannel3 = new double[DCTSize, DCTSize];
-                var yChannel4 = new double[DCTSize, DCTSize];
-
+                var yChannel = new[]
+                {
+                    new double[DCTSize, DCTSize],
+                    new double[DCTSize, DCTSize],
+                    new double[DCTSize, DCTSize],
+                    new double[DCTSize, DCTSize]
+                };
                 var cbChannel = new double[DCTSize, DCTSize];
                 var crChannel = new double[DCTSize, DCTSize];
-                foreach (var channel in new[] { yChannel1, yChannel2, yChannel3, yChannel4, cbChannel, crChannel })
+
+                foreach (var channel in new[]
+                             { yChannel[0], yChannel[1], yChannel[2], yChannel[3], cbChannel, crChannel })
                 {
                     var quantizedBytes = new byte[DCTSize * DCTSize];
                     allQuantizedBytes.ReadAsync(quantizedBytes, 0, quantizedBytes.Length).Wait();
@@ -165,23 +157,32 @@ namespace JPEG
                     ShiftMatrixValues(channel, 128);
                 }
 
-                var cbChannel1 = RestoreChannel(cbChannel, 0, 0);
-                var cbChannel2 = RestoreChannel(cbChannel, 0, 4);
-                var cbChannel3 = RestoreChannel(cbChannel, 4, 0);
-                var cbChannel4 = RestoreChannel(cbChannel, 4, 4);
+                var restoredCbChannel = RestoreChannel(cbChannel);
+                var restoredCrChannel = RestoreChannel(crChannel);
 
-                var crChannel1 = RestoreChannel(crChannel, 0, 0);
-                var crChannel2 = RestoreChannel(crChannel, 0, 4);
-                var crChannel3 = RestoreChannel(crChannel, 4, 0);
-                var crChannel4 = RestoreChannel(crChannel, 4, 4);
-
-                SetPixels(result, yChannel1, cbChannel1, crChannel1, y, x);
-                SetPixels(result, yChannel2, cbChannel2, crChannel2, y, x + DCTSize);
-                SetPixels(result, yChannel3, cbChannel3, crChannel3, y + DCTSize, x);
-                SetPixels(result, yChannel4, cbChannel4, crChannel4, y + DCTSize, x + DCTSize);
+                for (var i = 0; i < 4; i++)
+                {
+                    var yOffset = YXoffsets[i].Item1;
+                    var xOffset = YXoffsets[i].Item2;
+                    SetPixels(result,
+                        yChannel[i], restoredCbChannel[i], restoredCrChannel[i],
+                        y + yOffset,
+                        x + xOffset);
+                }
             }
 
             return result;
+        }
+
+        private static Tuple<int, int>[] GetMatrixOffsets(int offsetValue)
+        {
+            return new[]
+            {
+                Tuple.Create(0, 0),
+                Tuple.Create(0, offsetValue),
+                Tuple.Create(offsetValue, 0),
+                Tuple.Create(offsetValue, offsetValue)
+            };
         }
 
         private static void ShiftMatrixValues(double[,] subMatrix, int shiftValue)
@@ -195,19 +196,30 @@ namespace JPEG
                 subMatrix[y, x] += shiftValue;
         }
 
-        private static double[,] RestoreChannel(double[,] subsampled, int yOffset, int xOffset)
+        private static double[][,] RestoreChannel(double[,] subsampled)
         {
             var height = subsampled.GetLength(0);
             var width = subsampled.GetLength(1);
-            var result = new double[height, width];
+            var result = new double[4][,];
 
-            for (var y = 0; y < DCTSize / 2; y++)
-            for (var x = 0; x < DCTSize / 2; x++)
+            var YXoffsets = GetMatrixOffsets(4);
+
+            for (var i = 0; i < 4; i++)
             {
-                result[y * 2, x * 2] = subsampled[yOffset + y, xOffset + x];
-                result[y * 2, x * 2 + 1] = subsampled[yOffset + y, xOffset + x];
-                result[y * 2 + 1, x * 2] = subsampled[yOffset + y, xOffset + x];
-                result[y * 2 + 1, x * 2 + 1] = subsampled[yOffset + y, xOffset + x];
+                var yOffset = YXoffsets[i].Item1;
+                var xOffset = YXoffsets[i].Item2;
+                var channel = new double[height, width];
+
+                for (var y = 0; y < DCTSize / 2; y++)
+                for (var x = 0; x < DCTSize / 2; x++)
+                {
+                    channel[y * 2, x * 2] = subsampled[yOffset + y, xOffset + x];
+                    channel[y * 2, x * 2 + 1] = subsampled[yOffset + y, xOffset + x];
+                    channel[y * 2 + 1, x * 2] = subsampled[yOffset + y, xOffset + x];
+                    channel[y * 2 + 1, x * 2 + 1] = subsampled[yOffset + y, xOffset + x];
+                }
+
+                result[i] = channel;
             }
 
             return result;
@@ -232,6 +244,15 @@ namespace JPEG
                     crChannel[y, x]);
         }
 
+        /// <summary>
+        /// </summary>
+        /// <param name="bitmapInMemory"></param>
+        /// <param name="yOffset"></param>
+        /// <param name="yLength"></param>
+        /// <param name="xOffset"></param>
+        /// <param name="xLength"></param>
+        /// <param name="shift">pixel component number</param>
+        /// <returns></returns>
         private static double[,] GetSubMatrix(
             BitmapInMemory bitmapInMemory,
             int yOffset, int yLength,
