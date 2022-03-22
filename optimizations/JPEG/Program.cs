@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using JPEG.Huffman;
 using JPEG.Images;
 using JPEG.Utilities;
 
@@ -58,7 +59,7 @@ namespace JPEG
         private static CompressedImage Compress(BitmapInMemory bitmapInMemory, int quality = 50)
         {
             var allQuantizedBytes = new List<byte>();
-
+            DCT.SetConstants(DCTSize, DCTSize);
             for (var y = 0; y < bitmapInMemory.Height; y += DoubledDCTSize)
             for (var x = 0; x < bitmapInMemory.Width; x += DoubledDCTSize)
             {
@@ -124,7 +125,7 @@ namespace JPEG
                     image.Width,
                     image.Height,
                     PixelFormat.Format24bppRgb));
-
+            DCT.SetConstants(DCTSize, DCTSize);
             var YXoffsets = GetMatrixOffsets(DCTSize);
 
             using var allQuantizedBytes = new MemoryStream(
